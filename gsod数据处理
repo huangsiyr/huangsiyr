@@ -1,0 +1,158 @@
+import pandas as pd
+from pathlib import Path
+import sqlite3
+
+# ==================== 配置 ====================
+target_root = r"H:\百度数据\GSOD数据\untar"
+db_path = r"H:\百度数据\GSOD数据\gansu_stations.db"
+target_stationsID = ["52323099999","52418099999","52424099999","52436099999","52446099999",
+                     "52447099999","52515099999","52533099999","52546099999","52557099999",
+                     "52643099999","52652099999","52656099999","52661099999","52674099999",
+                     "52679099999","52681099999","52784099999","52787099999","52533199999"]
+
+# ==================== 初始化数据库 ====================
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+#注意：先不创建表，查看文件夹信息
+print(f"开始扫描目录: {target_root}\n目标站点数: {len(target_stationsID)}")
+
+# ==================== 查找CSV文件 ====================
+csv_files = list(Path(target_root).rglob("*.csv")) + list(Path(target_root).rglob("*.CSV"))
+print(f"找到 {len(csv_files)} 个CSV文件")
+
+
+# ==================== 处理数据 ====================
+matched = 0
+processed = set()
+total = 0
+first_file = True
+
+for csv_file in csv_files:
+    total += 1
+    station_id = csv_file.stem
+    year = csv_file.parent.name
+
+    if station_id in target_stationsID:
+        matched += 1
+        if station_id not in processed:
+            print(f"✅ 发现 {station_id}")
+            processed.add(station_id)
+        print(f"   处理 {station_id} 在{year}年的数据...")
+
+        try:
+            df = pd.read_csv(csv_file)
+            print(f"---------读取 {station_id}共计{len(df)} 行----------")
+
+            # 添加标识列
+            df['station_id'] = station_id
+            df['year'] = int(year) if year.isdigit() else year
+            # 第一个文件时创建表（使用所有列）
+            if first_file:
+                df.to_sql('station_data', conn, if_exists='replace', index=False)
+                first_file = False
+                print(f"   ✅ 创建表并写入 {len(df)} 条 (共{len(df.columns)}列)")
+            else:
+                # 后续文件直接追加
+                df.to_sql('station_data', conn, if_exists='append', index=False)
+                print(f"   ✅ 追加写入 {len(df)} 条")
+
+        except Exception as e:
+            print(f"   ❌ 错误: {e}")
+
+print(f"\n=== 处理完成 ===")
+print(f"总文件: {total}, 匹配: {matched}, 站点: {len(processed)}")
+"""
+total      # 扫描到的所有CSV文件总数（包括非目标站点）
+matched    # 匹配到的目标站点文件数（目标站点的所有年份文件总数）
+len(processed)  # 实际找到的不同站点数量（去重后的站点数）
+"""
+print(f"找到的站点: {sorted(processed)}")
+
+
+# ==================== 统计信息 ====================
+print("\n=== 站点详情 ===")
+#查询每个站点的统计信息
+cursor.execute("""SELECT
+                    station_id,
+                    COUNT(*) as record_count,
+                    MIN(year) as min_year,
+                    MAX(year) as max_year,
+                    COUNT(DISTINCT year) as year_count,
+                    GROUP_CONCAT(DISTINCT year ORDER BY year) as years_list
+            FROM station_data
+            GROUP BY station_id
+            ORDER BY station_id
+""")
+results =cursor.fetchall()
+report_path = r"H:\百度数据\GSOD数据\站点数据汇总\report"
+# 打开文件写入报告
+with open(report_path, 'w', encoding='utf-8') as f:
+    # 写入报告头
+    f.write("="*60 + "\n")
+    f.write("甘肃气象站点数据统计报告\n")
+    f.write("="*60 + "\n")
+    f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"数据库文件: {db_path}\n")
+    f.write(f"目标站点数: {len(target_stationsID)}\n")
+    f.write(f"实际找到站点数: {len(processed)}\n")
+    f.write(f"匹配的文件数: {matched}\n")
+    f.write(f"总文件数: {total}\n")
+    f.write("="*60 + "\n\n")
+
+    # 写入每个站点的详细信息
+    f.write("各站点详细信息:\n")
+    f.write("-"*60 + "\n")
+
+    for row in results:
+        station_id, record_count, min_year, max_year, year_count, years_list = row
+
+        # 将年份字符串转换为列表并排序
+        years = sorted([int(y) for y in years_list.split(',')]) if years_list else []
+
+        # 写入控制台（用于实时查看）
+        print(f"\n站点 {station_id}:")
+        print(f"  ├─ 数据年份: {year_count} 年")
+        print(f"  ├─ 年份范围: {min_year} - {max_year}")
+        print(f"  ├─ 总记录数: {record_count} 条")
+
+        # 格式化显示具体年份（每行显示15个年份）
+        if years:
+            year_str = "  └─ 具体年份: "
+            current_line = year_str
+            for i, y in enumerate(years):
+                year_text = str(y)
+                if i < len(years) - 1:
+                    year_text += ", "
+
+                if len(current_line) + len(year_text) > 100:
+                    print(current_line)
+                    current_line = "                " + year_text
+                else:
+                    current_line += year_text
+            print(current_line)
+        else:
+            print(f"  └─ 具体年份: 无年份信息")
+
+        # 写入文件（简洁格式）
+        f.write(f"站点 {station_id}:\n")
+        f.write(f"  ├─ 数据年份: {year_count} 年\n")
+        f.write(f"  ├─ 年份范围: {min_year} - {max_year}\n")
+        f.write(f"  ├─ 总记录数: {record_count} 条\n")
+        f.write(f"  └─ 具体年份: {years_list}\n\n")
+
+    # 写入总体统计
+    f.write("="*60 + "\n")
+    f.write("总体统计:\n")
+    f.write(f"  站点总数: {len(results)}\n")
+    f.write(f"  总记录数: {cursor.execute('SELECT COUNT(*) FROM station_data').fetchone()[0]}\n")
+
+    # 年份覆盖情况
+    cursor.execute("SELECT MIN(year), MAX(year) FROM station_data")
+    global_min, global_max = cursor.fetchone()
+    f.write(f"  总体年份范围: {global_min} - {global_max}\n")
+    f.write("="*60 + "\n")
+
+print(f"\n✅ 统计报告已保存到: {report_path}")
+#关闭数据库
+conn.close()
+print("\n" + "="*60)
