@@ -1,0 +1,203 @@
+#将成功合并的目标站点数据的变量逐个进行处理，先处理温度，华氏度转摄氏度并另存为新的文件
+import pandas as pd
+import os
+from datetime import datetime
+
+# ==================== 配置路径 ====================
+# 输入文件夹（存放原始CSV文件的路径）
+input_dir = r"H:\百度数据\GSOD数据\untar\目标站点数据"
+
+# 输出文件夹
+output_dir = os.path.join(input_dir, "转换后数据_摄氏度")
+os.makedirs(output_dir, exist_ok=True)
+
+# 需要转换的温度列名（根据你的实际列名调整，：前面是列名，后面是映射名）
+temp_columns = {
+    'TEMP': 'TEMP',      # 如果列名是TEMP
+    'MAX': 'MAX',         # 如果列名是MAX
+    'MIN': 'MIN',         # 如果列名是MIN
+}
+
+# 需要保留的列
+keep_columns = ['STATION', 'DATE', 'NAME', 'TEMP_C', 'MAX_C', 'MIN_C']
+
+# ==================== 华氏度转摄氏度函数 ====================
+def fahrenheit_to_celsius(f_temp):
+    """华氏度转摄氏度：℃ = (℉ - 32) / 1.8"""
+    try:
+        # 处理可能的缺失值
+        if pd.isna(f_temp):
+            return f_temp
+        # 转换为浮点数并计算
+        return (float(f_temp) - 32) / 1.8
+    except (ValueError, TypeError):
+        return None
+
+# ==================== 处理所有CSV文件 ====================
+print("="*60)
+print("开始转换温度单位（华氏度 → 摄氏度）")
+print("="*60)
+
+# 获取所有CSV文件
+csv_files = [f for f in os.listdir(input_dir) if f.endswith('.csv')]
+print(f"找到 {len(csv_files)} 个CSV文件需要处理\n")
+
+conversion_stats = []
+
+for filename in csv_files:
+    print(f"处理文件: {filename}")
+
+    file_path = os.path.join(input_dir, filename)
+
+    try:
+        # 读取CSV文件
+        df = pd.read_csv(file_path)
+        print(f"  ├─ 原始数据行数: {len(df)}")
+        print(f"  ├─ 原始列名: {list(df.columns)}")
+
+        # 检查温度列是否存在
+        missing_cols = []
+        for col in temp_columns.keys():
+            if col not in df.columns:
+                missing_cols.append(col)
+
+        if missing_cols:
+            print(f"  ⚠ 警告: 缺少温度列 {missing_cols}")
+            # 尝试查找可能的替代列名
+            possible_cols = ['TEMP', 'TEMPssd', 'Temp', 'temp', 'MAX', 'MAXssd', 'Max', 'max',
+                           'MIN', 'MINssd', 'Min', 'min']
+            found_cols = []
+            for col in possible_cols:
+                if col in df.columns:
+                    found_cols.append(col)
+            if found_cols:
+                print(f"    找到的可能温度列: {found_cols}")
+
+        # 转换温度列
+        conversion_count = 0
+        for orig_col, new_col in [('TEMP', 'TEMP_C'), ('MAX', 'MAX_C'), ('MIN', 'MIN_C')]:
+            if orig_col in df.columns:
+                # 记录转换前的统计
+                before_mean = df[orig_col].mean() if not df[orig_col].isna().all() else None
+
+                # 转换温度
+                df[new_col] = df[orig_col].apply(fahrenheit_to_celsius)
+
+                # 记录转换后的统计
+                after_mean = df[new_col].mean() if not df[new_col].isna().all() else None
+
+                if before_mean is not None and after_mean is not None:
+                    print(f"  ├─ {orig_col}: {before_mean:.2f}℉ → {after_mean:.2f}℃")
+                conversion_count += 1
+            else:
+                print(f"  ⚠ 警告: 列 {orig_col} 不存在，跳过转换")
+                df[new_col] = None
+
+        # 检查需要保留的列
+        available_keep_cols = []
+        for col in ['STATION', 'DATE', 'NAME']:
+            if col in df.columns:
+                available_keep_cols.append(col)
+            else:
+                # 尝试查找可能的替代列名
+                if col == 'STATION':
+                    possible = ['station', 'Station', 'STATION_ID', 'station_id']
+                elif col == 'DATE':
+                    possible = ['date', 'Date', 'YEAR', 'year']  # 可能日期是分开的
+                elif col == 'NAME':
+                    possible = ['name', 'Name', 'STATION_NAME', 'station_name']
+
+                found = False
+                for p in possible:
+                    if p in df.columns:
+                        available_keep_cols.append(p)
+                        print(f"  ├─ 使用替代列: {p} 代替 {col}")
+                        found = True
+                        break
+                if not found:
+                    print(f"  ⚠ 警告: 找不到 {col} 列的替代列")
+
+        # 添加转换后的温度列
+        available_keep_cols.extend(['TEMP_C', 'MAX_C', 'MIN_C'])
+
+        # 创建新的DataFrame（只保留需要的列）
+        new_df = df[available_keep_cols].copy()
+
+        # 生成输出文件名
+        base_name = filename.replace('.csv', '')
+        output_filename = f"{base_name}_摄氏度.csv"
+        output_path = os.path.join(output_dir, output_filename)
+
+        # 保存新文件
+        new_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+        # 记录统计信息
+        stats = {
+            'filename': filename,
+            'output': output_filename,
+            'original_rows': len(df),
+            'original_cols': len(df.columns),
+            'new_rows': len(new_df),
+            'new_cols': len(new_df.columns),
+            'temp_converted': conversion_count
+        }
+        conversion_stats.append(stats)
+
+        print(f"  └─ ✓ 已保存: {output_filename} ({len(new_df)}行, {len(new_df.columns)}列)")
+
+    except Exception as e:
+        print(f"  ✗ 处理失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ==================== 生成转换报告 ====================
+report_file = os.path.join(output_dir, "温度转换报告.txt")
+with open(report_file, 'w', encoding='utf-8') as f:
+    f.write("="*60 + "\n")
+    f.write("温度单位转换报告（华氏度 → 摄氏度）\n")
+    f.write("="*60 + "\n")
+    f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"输入目录: {input_dir}\n")
+    f.write(f"输出目录: {output_dir}\n")
+    f.write(f"转换公式: ℃ = (℉ - 32) / 1.8\n")
+    f.write("="*60 + "\n\n")
+
+    f.write("处理文件统计:\n")
+    f.write("-"*60 + "\n")
+
+    total_original_rows = 0
+    total_new_rows = 0
+
+    for stats in conversion_stats:
+        f.write(f"文件: {stats['filename']}\n")
+        f.write(f"  ├─ 输出文件: {stats['output']}\n")
+        f.write(f"  ├─ 原始行数: {stats['original_rows']}\n")
+        f.write(f"  ├─ 转换后行数: {stats['new_rows']}\n")
+        f.write(f"  ├─ 原始列数: {stats['original_cols']}\n")
+        f.write(f"  ├─ 转换后列数: {stats['new_cols']}\n")
+        f.write(f"  └─ 转换列数: {stats['temp_converted']} 列\n\n")
+
+        total_original_rows += stats['original_rows']
+        total_new_rows += stats['new_rows']
+
+    f.write("="*60 + "\n")
+    f.write("总体统计:\n")
+    f.write(f"  处理文件数: {len(conversion_stats)}\n")
+    f.write(f"  总原始行数: {total_original_rows}\n")
+    f.write(f"  总转换后行数: {total_new_rows}\n")
+    f.write("="*60 + "\n")
+
+print("\n" + "="*60)
+print(f"✅ 转换完成！")
+print(f"✅ 共处理 {len(conversion_stats)} 个文件")
+print(f"✅ 转换后文件保存在: {output_dir}")
+print(f"✅ 转换报告: {report_file}")
+print("="*60)
+
+# ==================== 显示生成的文件 ====================
+print("\n生成的文件列表:")
+for file in sorted(os.listdir(output_dir)):
+    if file.endswith('.csv'):
+        file_path = os.path.join(output_dir, file)
+        file_size = os.path.getsize(file_path) / 1024  # KB
+        print(f"  ├─ {file} ({file_size:.1f} KB)")
