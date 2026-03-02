@@ -1,0 +1,183 @@
+#从原始文件中提取所需站点，并按照站点进行保存。
+import os
+import pandas as pd
+import glob
+from datetime import datetime
+
+# ==================== 配置路径 ====================
+# 目标站点列表（带99999后缀）
+destination_id = ['52787099999','52681099999','52652099999','52533099999','52436099999','52418099999','52323099999']
+
+# 原始数据存放的根目录（包含1980-2024年份文件夹）
+root_dir = r"H:\百度数据\GSOD数据\untar"  # 请根据实际路径修改
+
+# 输出文件夹
+output_dir = os.path.join(root_dir, "目标站点数据")
+os.makedirs(output_dir, exist_ok=True)
+
+# ==================== 1. 获取所有年份文件夹 ====================
+print("="*60)
+print("开始扫描年份文件夹...")
+print("="*60)
+
+# 获取1980-2024所有年份文件夹
+year_folders = []
+for year in range(1980, 2025):
+    year_path = os.path.join(root_dir, str(year))
+    if os.path.exists(year_path) and os.path.isdir(year_path):
+        year_folders.append(year_path)
+
+print(f"找到 {len(year_folders)} 个年份文件夹: {[os.path.basename(f) for f in year_folders]}")
+
+# ==================== 2. 创建站点数据字典 ====================
+# 为每个目标站点创建一个空的DataFrame列表
+station_data = {station_id: [] for station_id in destination_id}
+
+# 记录每个站点找到的年份范围
+station_years = {station_id: [] for station_id in destination_id}
+
+# ==================== 3. 遍历所有年份文件夹 ====================
+print("\n正在搜索目标站点文件...")
+
+total_files_found = 0
+for year_folder in year_folders:
+    year = os.path.basename(year_folder)
+    print(f"\n处理年份: {year}")
+
+    year_files_found = 0
+
+    # 遍历每个目标站点
+    for station_id in destination_id:
+        # 构建可能的文件名（支持多种格式）
+        possible_patterns = [
+            os.path.join(year_folder, f"{station_id}.csv"),           # 52787099999.csv
+            os.path.join(year_folder, f"{station_id}.txt"),           # 52787099999.txt
+            os.path.join(year_folder, f"{station_id[:5]}.csv"),       # 52787.csv
+            os.path.join(year_folder, f"{station_id[:5]}.txt"),       # 52787.txt
+            os.path.join(year_folder, f"{station_id[:5]}-{year}.csv"), # 52787-1980.csv
+            os.path.join(year_folder, f"{station_id}-{year}.csv"),    # 52787099999-1980.csv
+        ]
+
+        # 查找文件
+        file_found = None
+        for pattern in possible_patterns:
+            if os.path.exists(pattern):
+                file_found = pattern
+                break
+
+        if file_found:
+            try:
+                # 读取文件
+                df = pd.read_csv(file_found)
+
+                # 添加年份列（如果文件中没有）
+                if 'year' not in df.columns:
+                    df['year'] = int(year)
+
+                # 添加站点ID列（如果文件中没有）
+                if 'station_id' not in df.columns:
+                    df['station_id'] = station_id
+
+                # 将数据添加到对应站点的列表中
+                station_data[station_id].append(df)
+                station_years[station_id].append(int(year))
+
+                print(f"  ✓ 找到: {os.path.basename(file_found)}")
+                year_files_found += 1
+                total_files_found += 1
+
+            except Exception as e:
+                print(f"  ✗ 读取失败 {file_found}: {e}")
+
+    print(f"  本年度找到 {year_files_found} 个站点文件")
+
+# ==================== 4. 合并每个站点的数据 ====================
+print("\n" + "="*60)
+print("正在合并站点数据...")
+print("="*60)
+
+merged_count = 0
+for station_id, dataframes in station_data.items():
+    if dataframes:
+        # 合并该站点的所有年份数据
+        merged_df = pd.concat(dataframes, ignore_index=True)
+
+        # 按年份排序
+        if 'year' in merged_df.columns:
+            merged_df = merged_df.sort_values(['year', 'month', 'day'] if 'month' in merged_df.columns else ['year'])
+
+        # 获取年份范围
+        years = sorted(station_years[station_id])
+        start_year = years[0]
+        end_year = years[-1]
+
+        # 生成文件名
+        filename = f"{station_id[:5]}-{start_year}-{end_year}.csv"
+        filepath = os.path.join(output_dir, filename)
+
+        # 保存文件
+        merged_df.to_csv(filepath, index=False, encoding='utf-8-sig')
+
+        print(f"\n站点: {station_id[:5]}")
+        print(f"  ├─ 年份范围: {start_year} - {end_year} ({len(years)}年)")
+        print(f"  ├─ 数据条数: {len(merged_df)}")
+        print(f"  ├─ 缺失年份: {set(range(start_year, end_year+1)) - set(years)}")
+        print(f"  └─ 已保存: {filename}")
+
+        merged_count += 1
+    else:
+        print(f"\n站点 {station_id[:5]}: 未找到任何数据")
+
+# ==================== 5. 生成汇总报告 ====================
+report_file = os.path.join(output_dir, "数据提取报告.txt")
+with open(report_file, 'w', encoding='utf-8') as f:
+    f.write("="*60 + "\n")
+    f.write("目标站点数据提取报告\n")
+    f.write("="*60 + "\n")
+    f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"数据根目录: {root_dir}\n")
+    f.write(f"输出目录: {output_dir}\n")
+    f.write(f"目标站点数: {len(destination_id)}\n")
+    f.write(f"实际找到站点数: {merged_count}\n")
+    f.write(f"总文件数: {total_files_found}\n")
+    f.write("="*60 + "\n\n")
+
+    f.write("各站点详情:\n")
+    f.write("-"*60 + "\n")
+
+    for station_id in destination_id:
+        years = station_years[station_id]
+        if years:
+            years_sorted = sorted(years)
+            f.write(f"站点 {station_id[:5]}:\n")
+            f.write(f"  ├─ 年份范围: {years_sorted[0]} - {years_sorted[-1]}\n")
+            f.write(f"  ├─ 总年数: {len(years_sorted)}\n")
+            f.write(f"  ├─ 具体年份: {', '.join(map(str, years_sorted))}\n")
+
+            # 检查是否有缺失年份
+            expected_years = set(range(years_sorted[0], years_sorted[-1] + 1))
+            missing = expected_years - set(years_sorted)
+            if missing:
+                f.write(f"  └─ 缺失年份: {', '.join(map(str, sorted(missing)))}\n\n")
+            else:
+                f.write(f"  └─ 缺失年份: 无\n\n")
+        else:
+            f.write(f"站点 {station_id[:5]}: 未找到数据\n\n")
+
+    f.write("="*60 + "\n")
+    f.write(f"共生成 {merged_count} 个站点数据文件\n")
+    f.write("="*60 + "\n")
+
+print("\n" + "="*60)
+print(f"✅ 处理完成！")
+print(f"✅ 成功合并 {merged_count}/{len(destination_id)} 个站点的数据")
+print(f"✅ 文件保存在: {output_dir}")
+print(f"✅ 报告文件: {report_file}")
+print("="*60)
+
+# ==================== 6. 显示文件列表 ====================
+print("\n生成的文件列表:")
+for file in sorted(os.listdir(output_dir)):
+    if file.endswith('.csv'):
+        file_size = os.path.getsize(os.path.join(output_dir, file)) / 1024  # KB
+        print(f"  ├─ {file} ({file_size:.1f} KB)")
