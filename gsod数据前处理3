@@ -1,197 +1,240 @@
 #将成功合并的目标站点数据的变量逐个进行处理，先处理温度，华氏度转摄氏度并另存为新的文件
+"""
+对每个站点的日值数据进行：
+月平均：计算每个月份的平均气温（TEMP_C）、平均最高温（MAX_C）、平均最低温（MIN_C）
+季节平均：按气象季节（12-2月、3-5月、6-8月、9-11月）计算季节平均
+输出文件：每个站点生成对应的月平均和季节平均文件"""
+
 import pandas as pd
 import os
+import numpy as np
 from datetime import datetime
 
 # ==================== 配置路径 ====================
-# 输入文件夹（存放原始CSV文件的路径）
-input_dir = r"H:\百度数据\GSOD数据\untar\目标站点数据"
+# 输入文件夹（存放转换后摄氏度数据的路径）
+input_dir = r"H:\百度数据\GSOD数据\untar\目标站点数据\转换后数据_摄氏度"
 
 # 输出文件夹
-output_dir = os.path.join(input_dir, "转换后数据_摄氏度")
+output_dir = os.path.join(input_dir, "月平均_季节平均")
 os.makedirs(output_dir, exist_ok=True)
 
-# 需要转换的温度列名（根据你的实际列名调整，：前面是列名，后面是映射名）
-temp_columns = {
-    'TEMP': 'TEMP',      # 如果列名是TEMP
-    'MAX': 'MAX',         # 如果列名是MAX
-    'MIN': 'MIN',         # 如果列名是MIN
-}
+# ==================== 定义季节函数 ====================
+def get_season(month):
+    """根据月份返回季节（正确处理冬季跨年）"""
+    if month in [12, 1, 2]:
+        return '冬季'
+    elif month in [3, 4, 5]:
+        return '春季'
+    elif month in [6, 7, 8]:
+        return '夏季'
+    elif month in [9, 10, 11]:
+        return '秋季'
+    else:
+        return '未知'
 
-# 需要保留的列
-keep_columns = ['STATION', 'DATE', 'NAME', 'TEMP_C', 'MAX_C', 'MIN_C']
-
-# ==================== 华氏度转摄氏度函数 ====================
-def fahrenheit_to_celsius(f_temp):
-    """华氏度转摄氏度：℃ = (℉ - 32) / 1.8"""
-    try:
-        # 处理可能的缺失值
-        if pd.isna(f_temp):
-            return f_temp
-        # 转换为浮点数并计算
-        return (float(f_temp) - 32) / 1.8
-    except (ValueError, TypeError):
-        return None
+def get_season_year(year, month):
+    """获取季节所属年份（冬季跨年处理）"""
+    if month == 12:
+        return year + 1  # 12月属于下一年的冬季
+    else:
+        return year
 
 # ==================== 处理所有CSV文件 ====================
 print("="*60)
-print("开始转换温度单位（华氏度 → 摄氏度）")
+print("开始计算月平均和季节平均")
 print("="*60)
 
-# 获取所有CSV文件
-csv_files = [f for f in os.listdir(input_dir) if f.endswith('.csv')]
-print(f"找到 {len(csv_files)} 个CSV文件需要处理\n")
+# 获取所有摄氏度CSV文件
+csv_files = [f for f in os.listdir(input_dir) if f.endswith('_摄氏度.csv')]
+print(f"找到 {len(csv_files)} 个文件需要处理\n")
 
-conversion_stats = []
+processing_stats = []
 
 for filename in csv_files:
     print(f"处理文件: {filename}")
-
     file_path = os.path.join(input_dir, filename)
 
     try:
         # 读取CSV文件
         df = pd.read_csv(file_path)
         print(f"  ├─ 原始数据行数: {len(df)}")
-        print(f"  ├─ 原始列名: {list(df.columns)}")
 
-        # 检查温度列是否存在
-        missing_cols = []
-        for col in temp_columns.keys():
-            if col not in df.columns:
-                missing_cols.append(col)
+        # 检查必要的列
+        required_cols = ['TEMP_C', 'MAX_C', 'MIN_C']
+        date_col = None
 
-        if missing_cols:
-            print(f"  ⚠ 警告: 缺少温度列 {missing_cols}")
-            # 尝试查找可能的替代列名
-            possible_cols = ['TEMP', 'TEMPssd', 'Temp', 'temp', 'MAX', 'MAXssd', 'Max', 'max',
-                           'MIN', 'MINssd', 'Min', 'min']
-            found_cols = []
-            for col in possible_cols:
-                if col in df.columns:
-                    found_cols.append(col)
-            if found_cols:
-                print(f"    找到的可能温度列: {found_cols}")
+        # 查找日期列
+        if 'DATE' in df.columns:
+            date_col = 'DATE'
+        elif 'date' in df.columns:
+            date_col = 'date'
+        elif 'YEAR' in df.columns and 'MONTH' in df.columns and 'DAY' in df.columns:
+            # 如果日期是分开的列，组合成日期
+            df['DATE'] = pd.to_datetime(df[date_col], format='%Y/%m/%d', errors='coerce')
+            date_col = 'DATE'
+        else:
+            # 尝试查找可能的日期列
+            for col in df.columns:
+                if 'date' in col.lower(): #字母转化为小写
+                    date_col = col
+                    break
 
-        # 转换温度列
-        conversion_count = 0
-        for orig_col, new_col in [('TEMP', 'TEMP_C'), ('MAX', 'MAX_C'), ('MIN', 'MIN_C')]:
-            if orig_col in df.columns:
-                # 记录转换前的统计
-                before_mean = df[orig_col].mean() if not df[orig_col].isna().all() else None
+        if date_col is None:
+            print(f"  ✗ 错误: 找不到日期列")
+            continue
 
-                # 转换温度
-                df[new_col] = df[orig_col].apply(fahrenheit_to_celsius)
+        print(f"  ├─ 使用日期列: {date_col}")
 
-                # 记录转换后的统计
-                after_mean = df[new_col].mean() if not df[new_col].isna().all() else None
+        # 确保日期列是datetime类型
+        df[date_col] = pd.to_datetime(df[date_col])
 
-                if before_mean is not None and after_mean is not None:
-                    print(f"  ├─ {orig_col}: {before_mean:.2f}℉ → {after_mean:.2f}℃")
-                conversion_count += 1
-            else:
-                print(f"  ⚠ 警告: 列 {orig_col} 不存在，跳过转换")
-                df[new_col] = None
+        # 提取年月信息
+        df['year'] = df[date_col].dt.year
+        df['month'] = df[date_col].dt.month
 
-        # 检查需要保留的列
-        available_keep_cols = []
-        for col in ['STATION', 'DATE', 'NAME']:
-            if col in df.columns:
-                available_keep_cols.append(col)
-            else:
-                # 尝试查找可能的替代列名
-                if col == 'STATION':
-                    possible = ['station', 'Station', 'STATION_ID', 'station_id']
-                elif col == 'DATE':
-                    possible = ['date', 'Date', 'YEAR', 'year']  # 可能日期是分开的
-                elif col == 'NAME':
-                    possible = ['name', 'Name', 'STATION_NAME', 'station_name']
+        # 获取站点信息
+        station_name = filename.replace('_摄氏度.csv', '')
 
-                found = False
-                for p in possible:
-                    if p in df.columns:
-                        available_keep_cols.append(p)
-                        print(f"  ├─ 使用替代列: {p} 代替 {col}")
-                        found = True
-                        break
-                if not found:
-                    print(f"  ⚠ 警告: 找不到 {col} 列的替代列")
+        # ==================== 1. 计算月平均 ====================
+        print(f"  ├─ 计算月平均...")
 
-        # 添加转换后的温度列
-        available_keep_cols.extend(['TEMP_C', 'MAX_C', 'MIN_C'])
+        # 按年份和月份分组计算月平均
+        monthly_avg = df.groupby(['year', 'month']).agg({
+            'TEMP_C': 'mean',
+            'MAX_C': 'mean',
+            'MIN_C': 'mean'
+        }).round(2)
 
-        # 创建新的DataFrame（只保留需要的列）
-        new_df = df[available_keep_cols].copy()
+        monthly_avg = monthly_avg.reset_index()
+        monthly_avg.columns = ['年份', '月份', '月均温', '月平均最高温', '月平均最低温']
 
+        # 添加季节信息
+        monthly_avg['季节'] = monthly_avg['月份'].apply(get_season)
+
+        # 计算各站点的多年各月平均
+        multi_year_monthly = df.groupby('month').agg({
+            'TEMP_C': 'mean',
+            'MAX_C': 'mean',
+            'MIN_C': 'mean'
+        }).round(2)
+
+        multi_year_monthly = multi_year_monthly.reset_index()
+        multi_year_monthly.columns = ['月份', '多年月均温', '多年月平均最高温', '多年月平均最低温']
+        multi_year_monthly['季节'] = multi_year_monthly['月份'].apply(get_season)
+
+        # ==================== 2. 计算季节平均 ====================
+        print(f"  ├─ 计算季节平均...")
+
+        # 添加季节和季节年份
+        df['season'] = df['month'].apply(get_season)
+        df['season_year'] = df.apply(lambda row: get_season_year(row['year'], row['month']), axis=1)
+
+        # 按季节年份和季节分组计算季节平均
+        seasonal_avg = df.groupby(['season_year', 'season']).agg({
+            'TEMP_C': 'mean',
+            'MAX_C': 'mean',
+            'MIN_C': 'mean'
+        }).round(2)
+
+        seasonal_avg = seasonal_avg.reset_index()
+        seasonal_avg.columns = ['年份', '季节', '季节均温', '季节平均最高温', '季节平均最低温']
+
+        # 按年份和季节排序
+        season_order = {'春季': 1, '夏季': 2, '秋季': 3, '冬季': 4}
+        seasonal_avg['季节顺序'] = seasonal_avg['季节'].map(season_order)
+        seasonal_avg = seasonal_avg.sort_values(['年份', '季节顺序']).drop('季节顺序', axis=1)
+
+        # ==================== 3. 计算年平均值（用于对比） ====================
+        yearly_avg = df.groupby('year').agg({
+            'TEMP_C': 'mean',
+            'MAX_C': 'mean',
+            'MIN_C': 'mean'
+        }).round(2)
+
+        yearly_avg = yearly_avg.reset_index()
+        yearly_avg.columns = ['年份', '年均温', '年平均最高温', '年平均最低温']
+
+        # ==================== 4. 保存结果 ====================
         # 生成输出文件名
-        base_name = filename.replace('.csv', '')
-        output_filename = f"{base_name}_摄氏度.csv"
-        output_path = os.path.join(output_dir, output_filename)
+        base_name = station_name
 
-        # 保存新文件
-        new_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        # 保存月平均数据
+        monthly_file = os.path.join(output_dir, f"{base_name}_月平均.csv")
+        monthly_avg.to_csv(monthly_file, index=False, encoding='utf-8-sig')
+
+        # 保存季节平均数据
+        seasonal_file = os.path.join(output_dir, f"{base_name}_季节平均.csv")
+        seasonal_avg.to_csv(seasonal_file, index=False, encoding='utf-8-sig')
+
+        # 保存多年月平均（气候态）
+        clim_monthly_file = os.path.join(output_dir, f"{base_name}_多年月平均.csv")
+        multi_year_monthly.to_csv(clim_monthly_file, index=False, encoding='utf-8-sig')
+
+        # 保存年平均值（可选）
+        yearly_file = os.path.join(output_dir, f"{base_name}_年平均.csv")
+        yearly_avg.to_csv(yearly_file, index=False, encoding='utf-8-sig')
 
         # 记录统计信息
         stats = {
-            'filename': filename,
-            'output': output_filename,
-            'original_rows': len(df),
-            'original_cols': len(df.columns),
-            'new_rows': len(new_df),
-            'new_cols': len(new_df.columns),
-            'temp_converted': conversion_count
+            'station': station_name,
+            'years': f"{df['year'].min()}-{df['year'].max()}",
+            'total_days': len(df),
+            'monthly_records': len(monthly_avg),
+            'seasonal_records': len(seasonal_avg)
         }
-        conversion_stats.append(stats)
+        processing_stats.append(stats)
 
-        print(f"  └─ ✓ 已保存: {output_filename} ({len(new_df)}行, {len(new_df.columns)}列)")
+        print(f"  ├─ 年份范围: {stats['years']}")
+        print(f"  ├─ 月平均记录: {stats['monthly_records']}条")
+        print(f"  ├─ 季节平均记录: {stats['seasonal_records']}条")
+        print(f"  └─ ✓ 已保存4个文件")
 
     except Exception as e:
         print(f"  ✗ 处理失败: {e}")
         import traceback
         traceback.print_exc()
 
-# ==================== 生成转换报告 ====================
-report_file = os.path.join(output_dir, "温度转换报告.txt")
+# ==================== 生成汇总报告 ====================
+report_file = os.path.join(output_dir, "计算报告.txt")
 with open(report_file, 'w', encoding='utf-8') as f:
     f.write("="*60 + "\n")
-    f.write("温度单位转换报告（华氏度 → 摄氏度）\n")
+    f.write("月平均和季节平均计算报告\n")
     f.write("="*60 + "\n")
     f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     f.write(f"输入目录: {input_dir}\n")
     f.write(f"输出目录: {output_dir}\n")
-    f.write(f"转换公式: ℃ = (℉ - 32) / 1.8\n")
     f.write("="*60 + "\n\n")
+
+    f.write("季节定义:\n")
+    f.write("  ├─ 春季: 3-5月\n")
+    f.write("  ├─ 夏季: 6-8月\n")
+    f.write("  ├─ 秋季: 9-11月\n")
+    f.write("  └─ 冬季: 12-2月（冬季跨年，12月归入下一年）\n\n")
 
     f.write("处理文件统计:\n")
     f.write("-"*60 + "\n")
 
-    total_original_rows = 0
-    total_new_rows = 0
-
-    for stats in conversion_stats:
-        f.write(f"文件: {stats['filename']}\n")
-        f.write(f"  ├─ 输出文件: {stats['output']}\n")
-        f.write(f"  ├─ 原始行数: {stats['original_rows']}\n")
-        f.write(f"  ├─ 转换后行数: {stats['new_rows']}\n")
-        f.write(f"  ├─ 原始列数: {stats['original_cols']}\n")
-        f.write(f"  ├─ 转换后列数: {stats['new_cols']}\n")
-        f.write(f"  └─ 转换列数: {stats['temp_converted']} 列\n\n")
-
-        total_original_rows += stats['original_rows']
-        total_new_rows += stats['new_rows']
+    for stats in processing_stats:
+        f.write(f"站点: {stats['station']}\n")
+        f.write(f"  ├─ 数据年份: {stats['years']}\n")
+        f.write(f"  ├─ 总天数: {stats['total_days']}\n")
+        f.write(f"  ├─ 月平均记录: {stats['monthly_records']}条\n")
+        f.write(f"  └─ 季节平均记录: {stats['seasonal_records']}条\n\n")
 
     f.write("="*60 + "\n")
-    f.write("总体统计:\n")
-    f.write(f"  处理文件数: {len(conversion_stats)}\n")
-    f.write(f"  总原始行数: {total_original_rows}\n")
-    f.write(f"  总转换后行数: {total_new_rows}\n")
+    f.write(f"共处理 {len(processing_stats)} 个站点\n")
+    f.write(f"每个站点生成4个文件:\n")
+    f.write(f"  1. {{站点名}}_月平均.csv - 逐年各月平均\n")
+    f.write(f"  2. {{站点名}}_季节平均.csv - 逐年季节平均\n")
+    f.write(f"  3. {{站点名}}_多年月平均.csv - 多年平均的各月气候态\n")
+    f.write(f"  4. {{站点名}}_年平均.csv - 逐年平均\n")
     f.write("="*60 + "\n")
 
 print("\n" + "="*60)
-print(f"✅ 转换完成！")
-print(f"✅ 共处理 {len(conversion_stats)} 个文件")
-print(f"✅ 转换后文件保存在: {output_dir}")
-print(f"✅ 转换报告: {report_file}")
+print(f"✅ 计算完成！")
+print(f"✅ 共处理 {len(processing_stats)} 个站点")
+print(f"✅ 结果保存在: {output_dir}")
+print(f"✅ 报告文件: {report_file}")
 print("="*60)
 
 # ==================== 显示生成的文件 ====================
